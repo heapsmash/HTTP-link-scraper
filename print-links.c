@@ -2,7 +2,7 @@
  *	All rights reserved.
  *
  *	Usage:	gcc print-links.c -o print-links
- *			./print-links -h www.google.com
+ *			./print-links -h 127.0.0.1
  */
 
 #include <stdio.h>
