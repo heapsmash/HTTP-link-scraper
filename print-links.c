@@ -1,3 +1,5 @@
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "hicpp-signed-bitwise"
 /*	Copyright (c) 2019, Tofu von Helmholtz.
  *	All rights reserved.
  *
@@ -19,7 +21,8 @@
         return(EXIT_FAILURE)
 
 #define MAX_REQUEST_SIZE 100
-#define MAX_READ_SIZE 5000
+#define MAX_READ_SIZE 10000
+#define MAX_STRING_SIZE 2000
 
 typedef struct _HttpContent {
 	char get_http_request[MAX_REQUEST_SIZE];
@@ -32,12 +35,12 @@ typedef struct _Connection {
 	HttpContent http_data;
 } Connection;
 
-void PrintAllSubStrings(const char *buf, const char *needle, char start_symbol, char end_symbol);
+int Read(void *usrbuf, int sck, size_t n, Connection *connection);
 int ConnectToHost(Connection *connection, const void *port);
 int SetupConnection(const char *host, const void *port);
 int Write(void *request, int sck, size_t n);
-int Read(void *usrbuf, int sck, size_t n);
-int ValidateRequest(const char *buf);
+char *GetNewLocation(char *html);
+void FindHyperLinks(char *html, Connection *connection);
 
 
 int main(int argc, char *argv[])
@@ -58,13 +61,15 @@ int main(int argc, char *argv[])
 			PRINT_ERROR_AND_RETURN("(Usage: %s -h host)\n", argv[0]);
 		}
 	}
-
+	printf("-> (%s)\n", connection.raw_host);
 	if (ConnectToHost(&connection, "http") < 0)
 		return EXIT_FAILURE;
 
-	PrintAllSubStrings(connection.http_data.received_data, "<a href=", '"', '"');
+	FindHyperLinks(connection.http_data.received_data, &connection);
+	printf("(%s) <-\n\n", connection.raw_host);
 
 	return EXIT_SUCCESS;
+
 }
 
 
@@ -84,12 +89,13 @@ int ConnectToHost(Connection *connection, const void *port)
 		return -1;
 	}
 
-	if (Read(connection->http_data.received_data, connection->sck, MAX_READ_SIZE) < 0) {
-		ERR("Write error: (%s)\n", strerror(errno));
+	if (Read(connection->http_data.received_data, connection->sck, MAX_READ_SIZE, connection) < 0) {
+		if (errno != 0)
+			ERR("Write error: (%s)\n", strerror(errno));
 		return -1;
 	}
 
-	if (ValidateRequest(connection->http_data.received_data) < 0) {
+	if (strstr(connection->http_data.received_data, "HTTP/1.1 200") < 0) {
 		ERR("strstr error: (HTTP/1.1 200 OK Not found)\n");
 		return -1;
 	}
@@ -104,27 +110,30 @@ int SetupConnection(const char *host, const void *port)
 	int status, clientfd = 0;
 
 	memset(&hints, 0, sizeof hints); // Make sure the struct is empty
-	hints.ai_family = AF_UNSPEC;        // Don't care IPv4 or IPv6
+	hints.ai_family = AF_INET;          // Don't care IPv4
 	hints.ai_socktype = SOCK_STREAM;    // TCP stream sockets
-	hints.ai_flags = AI_PASSIVE;        // Fill in my IP for me
+	hints.ai_flags = AI_CANONNAME | AI_ALL | AI_ADDRCONFIG;        // Fill in my IP for me
 
-	if ((status = getaddrinfo(host, port, &hints, &listp)) != 0) {
+	status = getaddrinfo(host, port, &hints, &listp);
+	if (status != 0) {
 		ERR("getaddrinfo error: (%s)\n", gai_strerror(status));
 		return -1;
 	}
 
 	for (p = listp; p; p = p->ai_next) {
-		if ((clientfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0)
+		if ((clientfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0) {
+			ERR("socket");
 			continue; // Socket failed, try the next
+		}
 
 		if (connect(clientfd, p->ai_addr, p->ai_addrlen) != -1)
 			break; // Success
+
 		if (close(clientfd) < 0) { // Connect failed, try another
 			ERR("close failed: (%s)\n", strerror(errno));
 			return -1;
 		}
 	}
-
 	freeaddrinfo(listp);
 	if (!p) {
 		ERR("all connects failed");
@@ -134,31 +143,32 @@ int SetupConnection(const char *host, const void *port)
 }
 
 
-int ValidateRequest(const char *buf)
+void FindHyperLinks(char *html, Connection *connection)
 {
-	if (strstr(buf, "HTTP/1.1 200 OK") == NULL) {
-		return -1;
-	}
-	return 0;
-}
+	char string[MAX_STRING_SIZE], *start_of_string, *end_of_string, encase;
+	ssize_t size;
 
+	if (!html)
+		return;
+	while ((html = strstr(html, "href="))) {
 
-void PrintAllSubStrings(const char *buf, const char *needle, char start_symbol, char end_symbol)
-{
-	char *new_buf = strstr(buf, needle);
-	while (new_buf != NULL) {
-		const char *start_of_link = strchr(new_buf, start_symbol) + 1;
-		const char *end_of_link = strchr(start_of_link, end_symbol);
+		html += sizeof("href=") - 1;
+		encase = *html;
 
-		char link[end_of_link - start_of_link];
+		if (encase == '\'' || encase == '"') {
+			start_of_string = html;
+			end_of_string = strchr(++start_of_string, encase);
 
-		strncpy(link, start_of_link, end_of_link - start_of_link);
-		link[sizeof(link)] = 0;
-
-		puts(link);
-
-		new_buf++;
-		new_buf = strstr(new_buf, needle);
+			if (end_of_string != NULL) {
+				size = end_of_string - start_of_string;
+				if (size > 0 || size < MAX_STRING_SIZE) {
+					strncpy(string, start_of_string, size);
+					string[size] = '\0';
+					puts(string);
+				}
+			}
+		}
+		++html;
 	}
 }
 
@@ -183,12 +193,16 @@ int Write(void *request, int sck, size_t n)
 }
 
 
-int Read(void *usrbuf, int sck, size_t n)
+int Read(void *usrbuf, int sck, size_t n, Connection *connection)
 {
-	size_t nleft = n;
+	char *found_301, *found_302, *bufp;
 	ssize_t nread;
+	size_t nleft = n;
+	int first_read_flag = 1;
+	static int stop_loop = 0;
+	int n_new_read;
 
-	char *bufp = usrbuf;
+	bufp = (char *) usrbuf;
 	while (nleft > 0) {
 		if ((nread = read(sck, bufp, nleft)) < 0) {
 			if (errno == EINTR) // Interrupted by sig handler
@@ -199,7 +213,52 @@ int Read(void *usrbuf, int sck, size_t n)
 			break;
 		nleft -= nread;
 		bufp += nread;
+
+		if (first_read_flag) {
+			first_read_flag = 0;
+
+			if (stop_loop) {
+				ERR("Read error: Could not recover HTTP/1.1 302 or HTTP/1.1 301\n");
+				return -1;
+			}
+			if (strstr(usrbuf, "HTTP/1.1 503")) {
+				ERR("HTTP/1.1 503\n");
+				return -1;
+			}
+
+			found_302 = strstr(usrbuf, "HTTP/1.1 302");
+			found_301 = strstr(usrbuf, "HTTP/1.1 301");
+			if (found_302 || found_301) {
+				connection->raw_host = GetNewLocation(usrbuf);
+				if (connection->raw_host == NULL) {
+					ERR("GetNewLocation: error\n");
+					return -1;
+				} else {
+					stop_loop = 1;
+					n_new_read = ConnectToHost(connection, "http");
+				}
+				return n_new_read;
+			}
+		}
 	}
 	return (n - nleft); // NOLINT(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
 }
 
+
+char *GetNewLocation(char *html)
+{
+	char *link = strstr(html, "://");
+
+	if (!link)
+		return NULL;
+
+	link += sizeof("://") - 1;
+
+	char *link_end = strchr(link + 1, '/');
+	*link_end = '\0';
+
+	return link;
+}
+
+
+#pragma clang diagnostic pop
