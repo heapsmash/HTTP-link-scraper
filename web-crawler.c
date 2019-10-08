@@ -23,12 +23,12 @@
         exit(EXIT_FAILURE)
 
 #define MAX_REQUEST_SIZE 1000
-#define MAX_READ_SIZE 1000000    /* 1mb */
+#define MAX_READ_SIZE 1000000 /* 1mb */
 #define MAX_LINK_LEN 2000
 #define MAX_LINKS 1000
 
-#define REQ_GET_HEADER_BODY_DONT_CLOSE "GET / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" // arg1 = host, arg2 = port
-#define REQ_GET_HEADER_DONT_CLOSE "HEAD / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" // arg1 = host, arg2 = port
+#define REQ_GET_HEADER_BODY_DONT_CLOSE "GET / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" /* arg1 = host, arg2 = port */
+#define REQ_GET_HEADER_DONT_CLOSE "HEAD / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" /* arg1 = host, arg2 = port */
 #define REQ_GET_HEADER_CLOSE "HEAD / HTTP/1.0\r\n\r\n"
 #define REQ_GET_BODY_CLOSE "GET /\r\n\r\n"
 
@@ -54,9 +54,9 @@ int Write(void *request, int sck, size_t n);
 int Read(void *usrbuf, int sck, size_t n);
 int Connect(Connection *connection);
 
-char *GetNewLocation(char *html);
-int FindHyperLinks(char *html, char **links);
+void FindHyperLinks(char *html, char **remote_links, char **local_links, size_t *n_remote, size_t *n_local);
 void CrawlHosts(Connection *con);
+char *GetNewLocation(char *html);
 
 
 int main(int argc, char *argv[])
@@ -92,7 +92,8 @@ int main(int argc, char *argv[])
 
 void CrawlHosts(Connection *con)
 {
-	char *links[MAX_LINK_LEN];
+	char *external_links[MAX_LINK_LEN], *local_links[MAX_LINK_LEN];
+	size_t n_external_links, n_local_links, i;
 
 	if ((GetHeader(con, true) < 0) && (
 			strstr(con->http_data.received_data, "HTTP/1.1 302") ||
@@ -101,11 +102,59 @@ void CrawlHosts(Connection *con)
 
 	if (con->raw_host != NULL) {
 		GetBody(con, true);
-		int n_links = FindHyperLinks(con->http_data.received_data, links);
+		FindHyperLinks(con->http_data.received_data, external_links, local_links, &n_external_links,
+					   &n_local_links);
 
-		for (int i = 0; i < n_links; i++) {
-			puts(links[i]);
+		puts("========external links===========");
+		for (i = 0; i < n_external_links; i++) {
+			puts(external_links[i]);
 		}
+		puts("\n========internal links===========");
+		for (i = 0; i < n_local_links; i++) {
+			puts(local_links[i]);
+		}
+	}
+}
+
+
+void FindHyperLinks(char *html, char **remote_links, char **local_links, size_t *n_remote, size_t *n_local)
+{
+	char temp[MAX_LINK_LEN], *start_of_link, *end_of_link, encase;
+	ssize_t size;
+
+	*n_local = *n_remote = 0;
+	if (!html) {
+		PRINT_ERROR_AND_EXIT("error char *html was NULL\n");
+	}
+
+	while (*n_remote < MAX_LINKS && (html = strstr(html, "href="))) {
+		html += sizeof("href=") - 1;
+		encase = *html;
+
+		if (encase == '\'' || encase == '"') {
+			start_of_link = html;
+			end_of_link = strchr(++start_of_link, encase);
+			size = end_of_link - start_of_link;
+
+			if (end_of_link != NULL && size > 0 && size < MAX_LINK_LEN) {
+				strncpy(temp, start_of_link, size); /* store the new link */
+				temp[size] = '\0';
+
+				if (GetNewLocation(temp) == NULL) { /* temp is a local link */
+					local_links[*n_local] = malloc(size + 1);
+					strncpy(local_links[*n_local], start_of_link, size);
+					local_links[*n_local][size] = '\0';
+					*n_local += 1;
+
+				} else { /* temp is a uri */
+					remote_links[*n_remote] = malloc(size + 1);
+					strncpy(remote_links[*n_remote], start_of_link, size);
+					remote_links[*n_remote][size] = '\0';
+					*n_remote += 1;
+				}
+			}
+		}
+		++html;
 	}
 }
 
@@ -133,7 +182,6 @@ int GetHeader(Connection *connection, bool close_after_request)
 	else
 		rv = Request(connection, MAX_READ_SIZE, MAX_REQUEST_SIZE, REQ_GET_HEADER_DONT_CLOSE,
 					 connection->raw_host, connection->port_numeric);
-
 	if (rv < 0)
 		connection->raw_host = NULL;
 	return rv;
@@ -214,50 +262,18 @@ int SetupConnection(const char *host, const void *port)
 
 		if (connect(clientfd, p->ai_addr, p->ai_addrlen) != -1)
 			break; /* Success */
-
 		if (close(clientfd) < 0) { /* Connect failed, try another */
 			ERR("close failed: (%s)\n", strerror(errno));
 			return -1;
 		}
 	}
+
 	freeaddrinfo(listp);
 	if (!p) {
 		ERR("all connects failed");
 		return -1;
 	} else
 		return clientfd;
-}
-
-
-int FindHyperLinks(char *html, char **links)
-{
-	char *start_of_link, *end_of_link, encase;
-	ssize_t size;
-	size_t n_links = 0;
-
-	if (!html) {
-		PRINT_ERROR_AND_EXIT("error char *html was NULL\n");
-	}
-
-	while (n_links < MAX_LINKS && (html = strstr(html, "href="))) {
-		html += sizeof("href=") - 1;
-		encase = *html;
-
-		if (encase == '\'' || encase == '"') {
-			start_of_link = html;
-			end_of_link = strchr(++start_of_link, encase);
-			size = end_of_link - start_of_link;
-
-			if (end_of_link != NULL && size > 0 && size < MAX_LINK_LEN) {
-				links[n_links] = malloc(size + 1);
-				strncpy(links[n_links], start_of_link, size);
-				links[n_links][size] = '\0';
-				n_links++;
-			}
-		}
-		++html;
-	}
-	return n_links;
 }
 
 
@@ -301,7 +317,6 @@ int Read(void *usrbuf, int sck, size_t n)
 			break;
 		nleft -= nread;
 		bufp += nread;
-
 	}
 	return (n - nleft); // NOLINT(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
 }
@@ -309,12 +324,12 @@ int Read(void *usrbuf, int sck, size_t n)
 
 char *GetNewLocation(char *html)
 {
-	char *link = strstr(html, "http://"); /* no https */
+	char *link = strstr(html, "://"); /* no https */
 
 	if (!link)
 		return NULL;
 
-	link += sizeof("p://") - 1;
+	link += sizeof("://") - 1;
 
 	char *link_end = strchr(link + 1, '/');
 	*link_end = '\0';
