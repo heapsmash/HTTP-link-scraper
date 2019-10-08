@@ -1,3 +1,5 @@
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "hicpp-signed-bitwise"
 /*	Copyright (c) 2019, Tofu von Helmholtz.
  *	All rights reserved.
  *
@@ -336,3 +338,5 @@ char *GetNewLocation(char *html)
 
 	return link;
 }
+
+#pragma clang diagnostic pop
