@@ -26,8 +26,8 @@
 
 #define MAX_REQUEST_SIZE 1000
 #define MAX_READ_SIZE 1000000 /* 1mb */
-#define MAX_LINK_LEN 2000
-#define MAX_LINKS 1000
+#define MAX_LINK_LEN 250
+#define MAX_LINKS 250
 
 #define REQ_GET_HEADER_BODY_DONT_CLOSE "GET / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" /* arg1 = host, arg2 = port */
 #define REQ_GET_HEADER_DONT_CLOSE "HEAD / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" /* arg1 = host, arg2 = port */
@@ -49,10 +49,9 @@ typedef struct _Connection {
 } Connection;
 
 int SendGetRequest(Connection *con, const char *request, ...);
-int ReceiveReply(Connection *con);
-
-int EstablishConnection(const char *host, const void *port);
 int Write(void *request, int sck, size_t n);
+int EstablishConnection(Connection *con);
+int ReceiveReply(Connection *con);
 
 void FindHyperLinks(char *html, char **remote_links, char **local_links, size_t *n_remote, size_t *n_local);
 void CrawlHosts(Connection *con);
@@ -96,27 +95,27 @@ int main(int argc, char *argv[])
 
 void CrawlHosts(Connection *con)
 {
-	size_t n_external_links, n_local_links, i;
-
-	if (con->raw_host != NULL &&
-		SendGetRequest(con, REQ_GET_HEADER_CLOSE) >= 0 && ReceiveReply(con) >= 0 &&
-		SendGetRequest(con, REQ_GET_BODY_CLOSE) >= 0 && ReceiveReply(con) >= 0) {
+	size_t n_external_links, n_local_links;
+	if (con->raw_host != NULL && SendGetRequest(con, REQ_GET_HEADER_BODY_DONT_CLOSE, con->raw_host, con->port_numeric) >= 0 &&
+		ReceiveReply(con) >= 0) {
 
 		char *external_links[MAX_LINK_LEN], *local_links[MAX_LINK_LEN];
 
 		FindHyperLinks(con->http_data.received_data, external_links, local_links, &n_external_links, &n_local_links);
 
+		printf("-> %s\n", con->raw_host);
 		puts("========external links===========");
-		for (i = 0; i < n_external_links; i++) {
+		for (size_t i = 0; i < n_external_links; i++) {
 			puts(external_links[i]);
 			free(external_links[i]);
 		}
 
 		puts("\n========internal links===========");
-		for (i = 0; i < n_local_links; i++) {
+		for (size_t i = 0; i < n_local_links; i++) {
 			puts(local_links[i]);
 			free(local_links[i]);
 		}
+		puts("");
 	} else if (strstr(con->http_data.received_data, "HTTP/1.1 302")) { /* check for URL redirection */
 		con->raw_host = GetNewLocation(con->http_data.received_data);
 		if (SendGetRequest(con, REQ_GET_HEADER_CLOSE) >= 0)
@@ -133,7 +132,7 @@ int SendGetRequest(Connection *con, const char *request, ...)
 	memset(&con->http_data.get_http_request, '\0', MAX_REQUEST_SIZE - 1);
 	memset(&con->http_data.received_data, '\0', MAX_REQUEST_SIZE - 1);
 
-	con->sck = EstablishConnection(con->raw_host, con->port_string); /* connect to host */
+	con->sck = EstablishConnection(con); /* connect to host */
 	if (con->sck < 0)
 		goto fail_sck;
 
@@ -233,22 +232,17 @@ void FindHyperLinks(char *html, char **remote_links, char **local_links, size_t 
 }
 
 
-int EstablishConnection(const char *host, const void *port)
+int EstablishConnection(Connection *con)
 {
 	struct addrinfo hints, *listp, *p = NULL;
 	int status, clientfd = 0;
 
-	struct timeval time = {
-			2,
-			0
-	};
-
 	memset(&hints, 0, sizeof hints); /* Make sure the struct is empty */
-	hints.ai_family = AF_INET;          /* Don't care IPv4 */
-	hints.ai_socktype = SOCK_STREAM;    /* TCP stream sockets */
+	hints.ai_family = AF_INET;           /* Don't care IPv4 */
+	hints.ai_socktype = SOCK_STREAM;     /* TCP stream sockets */
 	hints.ai_flags = AI_CANONNAME | AI_ALL | AI_ADDRCONFIG;
 
-	status = getaddrinfo(host, port, &hints, &listp);
+	status = getaddrinfo(con->raw_host, con->port_string, &hints, &listp);
 	if (status != 0) {
 		ERR("getaddrinfo error: (%s)\n", gai_strerror(status));
 		goto fail_freeaddr;
@@ -260,7 +254,7 @@ int EstablishConnection(const char *host, const void *port)
 			continue; /* Socket failed, try the next */
 		}
 
-		if (setsockopt(clientfd, SOL_SOCKET, SO_SNDTIMEO, (struct timeval *) &time, sizeof(struct timeval)) < 0)
+		if (setsockopt(clientfd, SOL_SOCKET, SO_SNDTIMEO, (struct timeval *) &con->time, sizeof(struct timeval)) < 0)
 			goto fail_closefd;
 
 		if (connect(clientfd, p->ai_addr, p->ai_addrlen) != -1)
