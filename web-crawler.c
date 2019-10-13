@@ -12,7 +12,6 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
-#include <stdbool.h>
 #include <getopt.h>
 #include <errno.h>
 #include <unistd.h>
@@ -91,41 +90,89 @@ int main(int argc, char *argv[])
 	}
 
 	CrawlHosts(&connection);
-	return EXIT_SUCCESS;
+	return 0;
 }
 
 
 void CrawlHosts(Connection *con)
 {
-	char *external_links[MAX_LINK_LEN], *local_links[MAX_LINK_LEN];
 	size_t n_external_links, n_local_links, i;
 
-	if (con->raw_host == NULL)
-		return;
+	if (con->raw_host != NULL &&
+		SendGetRequest(con, REQ_GET_HEADER_CLOSE) >= 0 && ReceiveReply(con) >= 0 &&
+		SendGetRequest(con, REQ_GET_BODY_CLOSE) >= 0 && ReceiveReply(con) >= 0) {
 
-	if (SendGetRequest(con, REQ_GET_HEADER_CLOSE) < 0)
-		con->raw_host = NULL;
-	else if (ReceiveReply(con) < 0 &&
-			 (strstr(con->http_data.received_data, "HTTP/1.1 302") || strstr(con->http_data.received_data, "HTTP/1.1 301"))) {
-		con->raw_host = GetNewLocation(con->http_data.received_data);
-		CrawlHosts(con);
-	}
+		char *external_links[MAX_LINK_LEN], *local_links[MAX_LINK_LEN];
 
-	if (con->raw_host != NULL) {
-		SendGetRequest(con, REQ_GET_BODY_CLOSE);
-		ReceiveReply(con);
 		FindHyperLinks(con->http_data.received_data, external_links, local_links, &n_external_links, &n_local_links);
 
 		puts("========external links===========");
 		for (i = 0; i < n_external_links; i++) {
 			puts(external_links[i]);
+			free(external_links[i]);
 		}
 
 		puts("\n========internal links===========");
 		for (i = 0; i < n_local_links; i++) {
 			puts(local_links[i]);
+			free(local_links[i]);
 		}
+	} else if (strstr(con->http_data.received_data, "HTTP/1.1 302")) { /* check for URL redirection */
+		con->raw_host = GetNewLocation(con->http_data.received_data);
+		if (SendGetRequest(con, REQ_GET_HEADER_CLOSE) >= 0)
+			CrawlHosts(con);
 	}
+}
+
+
+int SendGetRequest(Connection *con, const char *request, ...)
+{
+	va_list ap;
+	int status = -1; /* fail */
+
+	memset(&con->http_data.get_http_request, '\0', MAX_REQUEST_SIZE - 1);
+	memset(&con->http_data.received_data, '\0', MAX_REQUEST_SIZE - 1);
+
+	con->sck = EstablishConnection(con->raw_host, con->port_string); /* connect to host */
+	if (con->sck < 0)
+		goto fail_sck;
+
+	va_start(ap, request);
+	if ((vsnprintf(con->http_data.get_http_request, MAX_REQUEST_SIZE, request, ap)) < 0) { /* Build request string */
+		ERR("vsnprintf error:\n");
+		goto fail_va;
+	}
+
+	if (Write(con->http_data.get_http_request, con->sck, strlen(con->http_data.get_http_request)) < 0) { /* send request to host */
+		ERR("Write error: (%s)\n", strerror(errno));
+		close(con->sck);
+		goto fail_va;
+	}
+	status = 0; /* success */
+
+	fail_va:
+	va_end(ap);
+	fail_sck:
+	return status;
+}
+
+
+int ReceiveReply(Connection *con)
+{
+	if (read(con->sck, con->http_data.received_data, MAX_READ_SIZE) >= 0 &&
+		strstr(con->http_data.received_data, "HTTP/1.1 200") >= 0)
+
+		return 0; /* success */
+
+	if (errno == EINTR) /* interrupted by sig handler call again */
+		return ReceiveReply(con);
+	else if (errno != 0) {
+		ERR("read failed: (%s)\n", strerror(errno));
+		close(con->sck);
+	} else
+		ERR("strstr error: (HTTP/1.1 200 OK Not found)\n");
+
+	return -1; /* fail */
 }
 
 
@@ -153,13 +200,21 @@ void FindHyperLinks(char *html, char **remote_links, char **local_links, size_t 
 				temp[size] = '\0';
 
 				if (GetNewLocation(temp) == NULL) { /* temp is a local link */
+
 					local_links[*n_local] = malloc(size + 1);
+					if (local_links[*n_local] == NULL)
+						goto fail;
+
 					strncpy(local_links[*n_local], start_of_link, size);
 					local_links[*n_local][size] = '\0';
 					*n_local += 1;
 
 				} else { /* temp is a uri */
+
 					remote_links[*n_remote] = malloc(size + 1);
+					if (remote_links[*n_remote] == NULL)
+						goto fail;
+
 					strncpy(remote_links[*n_remote], start_of_link, size);
 					remote_links[*n_remote][size] = '\0';
 					*n_remote += 1;
@@ -168,60 +223,19 @@ void FindHyperLinks(char *html, char **remote_links, char **local_links, size_t 
 		}
 		++html;
 	}
-}
+	return; /* success */
 
-
-int SendGetRequest(Connection *con, const char *request, ...)
-{
-	va_list ap;
-
-	memset(&con->http_data.get_http_request, '\0', MAX_REQUEST_SIZE - 1);
-	memset(&con->http_data.received_data, '\0', MAX_REQUEST_SIZE - 1);
-
-	con->sck = EstablishConnection(con->raw_host, con->port_string);
-	if (con->sck < 0)
-		return -1;
-
-	va_start(ap, request);  /* Build request string */
-	if ((vsnprintf(con->http_data.get_http_request, MAX_REQUEST_SIZE, request, ap)) < 0) {
-		va_end(ap);
-		PRINT_ERROR_AND_EXIT("vsnprintf error:\n");
-	}
-	va_end(ap);
-
-	if (Write(con->http_data.get_http_request, con->sck, /* send request to host */
-			  strlen(con->http_data.get_http_request)) < 0) {
-		PRINT_ERROR_AND_EXIT("Write error: (%s)\n", strerror(errno));
-	}
-
-	return 0;
-}
-
-
-int ReceiveReply(Connection *con)
-{
-	if (read(con->sck, con->http_data.received_data, MAX_READ_SIZE) < 0) { /* get response */
-		if (errno == EINTR)    /* interrupted by sig handler call again */
-			return ReceiveReply(con);
-		if (errno != 0) {
-			PRINT_ERROR_AND_EXIT("Read error: (%s)\n", strerror(errno));
-		} else {
-			PRINT_ERROR_AND_EXIT("Read error:");
-		}
-	}
-
-	if (strstr(con->http_data.received_data, "HTTP/1.1 200") < 0) {
-		ERR("strstr error: (HTTP/1.1 200 OK Not found)\n");
-		return -1;
-	}
-
-	return 0;
+	fail:
+	for (size_t i = 0; i < *n_remote; i++)
+		free(remote_links[*n_remote]);
+	for (size_t i = 0; i < *n_local; i++)
+		free(local_links[*n_local]);
 }
 
 
 int EstablishConnection(const char *host, const void *port)
 {
-	struct addrinfo hints, *listp, *p;
+	struct addrinfo hints, *listp, *p = NULL;
 	int status, clientfd = 0;
 
 	struct timeval time = {
@@ -237,7 +251,7 @@ int EstablishConnection(const char *host, const void *port)
 	status = getaddrinfo(host, port, &hints, &listp);
 	if (status != 0) {
 		ERR("getaddrinfo error: (%s)\n", gai_strerror(status));
-		return -1;
+		goto fail_freeaddr;
 	}
 
 	for (p = listp; p; p = p->ai_next) {
@@ -246,23 +260,25 @@ int EstablishConnection(const char *host, const void *port)
 			continue; /* Socket failed, try the next */
 		}
 
-		setsockopt(clientfd, SOL_SOCKET, SO_SNDTIMEO, (struct timeval *) &time, sizeof(struct timeval));
+		if (setsockopt(clientfd, SOL_SOCKET, SO_SNDTIMEO, (struct timeval *) &time, sizeof(struct timeval)) < 0)
+			goto fail_closefd;
 
 		if (connect(clientfd, p->ai_addr, p->ai_addrlen) != -1)
-			break; /* Success */
+			goto success; /* Success */
 
 		if (close(clientfd) < 0) { /* Connect failed, try another */
 			ERR("close failed: (%s)\n", strerror(errno));
-			return -1;
+			goto fail_freeaddr;
 		}
 	}
+	ERR("all connects failed");
 
+	fail_closefd:
+	close(clientfd);
+	fail_freeaddr:
+	success:
 	freeaddrinfo(listp);
-	if (!p) {
-		ERR("all connects failed");
-		return -1;
-	} else
-		return clientfd;
+	return clientfd;
 }
 
 
