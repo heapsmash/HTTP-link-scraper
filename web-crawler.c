@@ -98,14 +98,12 @@ void CrawlHosts(Connection *con)
 	size_t n_external_links, n_local_links, i;
 
 	if ((GetHeader(con, true) < 0) && (
-			strstr(con->http_data.received_data, "HTTP/1.1 302") ||
-			strstr(con->http_data.received_data, "HTTP/1.1 301")))
+			strstr(con->http_data.received_data, "HTTP/1.1 302") || strstr(con->http_data.received_data, "HTTP/1.1 301")))
 		con->raw_host = GetNewLocation(con->http_data.received_data);
 
 	if (con->raw_host != NULL) {
 		GetBody(con, true);
-		FindHyperLinks(con->http_data.received_data, external_links, local_links, &n_external_links,
-					   &n_local_links);
+		FindHyperLinks(con->http_data.received_data, external_links, local_links, &n_external_links, &n_local_links);
 
 		puts("========external links===========");
 		for (i = 0; i < n_external_links; i++) {
@@ -182,8 +180,8 @@ int GetHeader(Connection *connection, bool close_after_request)
 	if (close_after_request)
 		rv = Request(connection, MAX_READ_SIZE, MAX_REQUEST_SIZE, REQ_GET_HEADER_CLOSE);
 	else
-		rv = Request(connection, MAX_READ_SIZE, MAX_REQUEST_SIZE, REQ_GET_HEADER_DONT_CLOSE,
-					 connection->raw_host, connection->port_numeric);
+		rv = Request(connection, MAX_READ_SIZE, MAX_REQUEST_SIZE, REQ_GET_HEADER_DONT_CLOSE, connection->raw_host,
+					 connection->port_numeric);
 	if (rv < 0)
 		connection->raw_host = NULL;
 	return rv;
@@ -200,8 +198,8 @@ int GetBody(Connection *connection, bool close_after_request)
 	if (close_after_request)
 		return Request(connection, MAX_READ_SIZE, MAX_REQUEST_SIZE, REQ_GET_BODY_CLOSE);
 	else
-		return Request(connection, MAX_READ_SIZE, MAX_REQUEST_SIZE, REQ_GET_HEADER_BODY_DONT_CLOSE,
-					   connection->raw_host, connection->port_numeric);
+		return Request(connection, MAX_READ_SIZE, MAX_REQUEST_SIZE, REQ_GET_HEADER_BODY_DONT_CLOSE, connection->raw_host,
+					   connection->port_numeric);
 }
 
 
@@ -338,5 +336,6 @@ char *GetNewLocation(char *html)
 
 	return link;
 }
+
 
 #pragma clang diagnostic pop
