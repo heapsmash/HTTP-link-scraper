@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <sys/socket.h>
+#include <fcntl.h>
 
 #define ERR(format, ...) fprintf(stderr, "-> error in %s() line %d\n"format, __func__, __LINE__, ##__VA_ARGS__)
 #define PRINT_ERROR_AND_RETURN(format, ...) ERR(format, ##__VA_ARGS__); \
@@ -24,8 +25,8 @@
 #define PRINT_ERROR_AND_EXIT(format, ...) ERR(format, ##__VA_ARGS__); \
         exit(EXIT_FAILURE)
 
-#define MAX_REQUEST_SIZE 1000
-#define MAX_READ_SIZE 1000000 /* 1mb */
+#define MAX_REQUEST_SIZE 50
+#define MAX_READ_SIZE 100000
 #define MAX_LINK_LEN 250
 #define MAX_LINKS 250
 
@@ -33,6 +34,17 @@
 #define REQ_GET_HEADER_DONT_CLOSE "HEAD / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" /* arg1 = host, arg2 = port */
 #define REQ_GET_HEADER_CLOSE "HEAD / HTTP/1.0\r\n\r\n"
 #define REQ_GET_BODY_CLOSE "GET /\r\n\r\n"
+
+struct node {
+	char *key;
+	int val;
+	struct node *next;
+};
+
+struct table {
+	int size;
+	struct node **list;
+};
 
 typedef struct _HttpContent {
 	char get_http_request[MAX_REQUEST_SIZE];
@@ -46,10 +58,17 @@ typedef struct _Connection {
 	int sck;
 	HttpContent http_data;
 	struct timeval time;
+	struct table *hash;
+	int n_links;
 } Connection;
 
+int HashLookUp(struct table *t, char *key);
+void HashInsert(struct table *t, char *key, int val);
+int HashCode(struct table *t, const char *key);
+struct table *HashCreateTable(int size);
 int SendGetRequest(Connection *con, const char *request, ...);
 int Write(void *request, int sck, size_t n);
+ssize_t Read(int fd, void *usrbuf, size_t n);
 int EstablishConnection(Connection *con);
 int ReceiveReply(Connection *con);
 
@@ -64,12 +83,14 @@ int main(int argc, char *argv[])
 	Connection connection;
 	connection.time.tv_sec = 2;
 	connection.time.tv_usec = 0;
+	connection.hash = HashCreateTable(MAX_LINKS);
+	connection.n_links = 0;
 
 	if (argc != 5) {
 		PRINT_ERROR_AND_RETURN("Usage: %s -h host -p port\n", argv[0]);
 	}
 
-	while ((opt = getopt(argc, argv, "h:p:t:")) != -1) {
+	while ((opt = getopt(argc, argv, "h:p:t:")) != -1) {    //Todo: add verbose feature, also add time in miliseconds.
 		switch (opt) { // NOLINT(hicpp-multiway-paths-covered)
 			case 'h':
 				connection.raw_host = optarg;
@@ -96,16 +117,28 @@ int main(int argc, char *argv[])
 void CrawlHosts(Connection *con)
 {
 	size_t n_external_links, n_local_links;
+
+	printf("Current Host: -> [%s]\n", con->raw_host);
+	memset(&con->http_data.get_http_request, '\0', MAX_REQUEST_SIZE - 1);
+	memset(&con->http_data.received_data, '\0', MAX_REQUEST_SIZE - 1);
+
 	if (con->raw_host != NULL && SendGetRequest(con, REQ_GET_HEADER_BODY_DONT_CLOSE, con->raw_host, con->port_numeric) >= 0 &&
 		ReceiveReply(con) >= 0) {
-
 		char *external_links[MAX_LINK_LEN], *local_links[MAX_LINK_LEN];
 
+		n_external_links = n_local_links = 0;
 		FindHyperLinks(con->http_data.received_data, external_links, local_links, &n_external_links, &n_local_links);
 
-		printf("-> %s\n", con->raw_host);
 		puts("========external links===========");
 		for (size_t i = 0; i < n_external_links; i++) {
+			char *new_host = GetNewLocation(external_links[i]);
+			if (HashLookUp(con->hash, new_host) == -1) {
+				printf("Hash host: %s\n", new_host);
+				HashInsert(con->hash, new_host, con->n_links);
+				con->raw_host = new_host;
+				con->n_links++;
+				CrawlHosts(con);
+			}
 			puts(external_links[i]);
 			free(external_links[i]);
 		}
@@ -115,10 +148,9 @@ void CrawlHosts(Connection *con)
 			puts(local_links[i]);
 			free(local_links[i]);
 		}
-		puts("");
 	} else if (strstr(con->http_data.received_data, "HTTP/1.1 302")) { /* check for URL redirection */
 		con->raw_host = GetNewLocation(con->http_data.received_data);
-		if (SendGetRequest(con, REQ_GET_HEADER_CLOSE) >= 0)
+		if (SendGetRequest(con, REQ_GET_HEADER_CLOSE) >= 0 && strstr(con->http_data.received_data, "\"HTTP/1.1 200 OK"))
 			CrawlHosts(con);
 	}
 }
@@ -128,9 +160,6 @@ int SendGetRequest(Connection *con, const char *request, ...)
 {
 	va_list ap;
 	int status = -1; /* fail */
-
-	memset(&con->http_data.get_http_request, '\0', MAX_REQUEST_SIZE - 1);
-	memset(&con->http_data.received_data, '\0', MAX_REQUEST_SIZE - 1);
 
 	con->sck = EstablishConnection(con); /* connect to host */
 	if (con->sck < 0)
@@ -149,27 +178,23 @@ int SendGetRequest(Connection *con, const char *request, ...)
 	}
 	status = 0; /* success */
 
-	fail_va:
+fail_va:
 	va_end(ap);
-	fail_sck:
+fail_sck:
 	return status;
 }
 
 
 int ReceiveReply(Connection *con)
 {
-	if (read(con->sck, con->http_data.received_data, MAX_READ_SIZE) >= 0 &&
-		strstr(con->http_data.received_data, "HTTP/1.1 200") >= 0)
-
-		return 0; /* success */
-
-	if (errno == EINTR) /* interrupted by sig handler call again */
-		return ReceiveReply(con);
-	else if (errno != 0) {
+	int n_bytes;
+	char *temp_buf = malloc(MAX_READ_SIZE + 10);
+	n_bytes = read(con->sck, temp_buf, MAX_READ_SIZE);
+	puts(temp_buf);
+	if (errno != 0) {
 		ERR("read failed: (%s)\n", strerror(errno));
 		close(con->sck);
-	} else
-		ERR("strstr error: (HTTP/1.1 200 OK Not found)\n");
+	}
 
 	return -1; /* fail */
 }
@@ -180,12 +205,11 @@ void FindHyperLinks(char *html, char **remote_links, char **local_links, size_t 
 	char temp[MAX_LINK_LEN], *start_of_link, *end_of_link, encase;
 	ssize_t size;
 
-	*n_local = *n_remote = 0;
 	if (!html) {
 		PRINT_ERROR_AND_EXIT("error char *html was NULL\n");
 	}
 
-	while (*n_remote < MAX_LINKS && (html = strstr(html, "href="))) {
+	while ((*n_remote < MAX_LINKS) && ((html = strstr(html, "href=")) != NULL)) {
 		html += sizeof("href=") - 1;
 		encase = *html;
 
@@ -224,7 +248,7 @@ void FindHyperLinks(char *html, char **remote_links, char **local_links, size_t 
 	}
 	return; /* success */
 
-	fail:
+fail:
 	for (size_t i = 0; i < *n_remote; i++)
 		free(remote_links[*n_remote]);
 	for (size_t i = 0; i < *n_local; i++)
@@ -235,43 +259,40 @@ void FindHyperLinks(char *html, char **remote_links, char **local_links, size_t 
 int EstablishConnection(Connection *con)
 {
 	struct addrinfo hints, *listp, *p = NULL;
-	int status, clientfd = 0;
+	int status, clientfd = -1;
 
-	memset(&hints, 0, sizeof hints); /* Make sure the struct is empty */
-	hints.ai_family = AF_INET;           /* Don't care IPv4 */
-	hints.ai_socktype = SOCK_STREAM;     /* TCP stream sockets */
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_CANONNAME | AI_ALL | AI_ADDRCONFIG;
 
 	status = getaddrinfo(con->raw_host, con->port_string, &hints, &listp);
 	if (status != 0) {
 		ERR("getaddrinfo error: (%s)\n", gai_strerror(status));
-		goto fail_freeaddr;
+		goto fail;
 	}
 
 	for (p = listp; p; p = p->ai_next) {
 		if ((clientfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0) {
-			ERR("socket");
 			continue; /* Socket failed, try the next */
 		}
-
 		if (setsockopt(clientfd, SOL_SOCKET, SO_SNDTIMEO, (struct timeval *) &con->time, sizeof(struct timeval)) < 0)
-			goto fail_closefd;
-
+			goto fail_closefd_freeaddr;
 		if (connect(clientfd, p->ai_addr, p->ai_addrlen) != -1)
 			goto success; /* Success */
 
 		if (close(clientfd) < 0) { /* Connect failed, try another */
-			ERR("close failed: (%s)\n", strerror(errno));
 			goto fail_freeaddr;
 		}
 	}
 	ERR("all connects failed");
 
-	fail_closefd:
+fail_closefd_freeaddr:
 	close(clientfd);
-	fail_freeaddr:
-	success:
+success:
+fail_freeaddr:
 	freeaddrinfo(listp);
+fail:
 	return clientfd;
 }
 
@@ -296,6 +317,24 @@ int Write(void *request, int sck, size_t n)
 }
 
 
+ssize_t Read(int fd, void *usrbuf, size_t n)
+{
+	size_t nleft = n;
+	ssize_t nread;
+	char *bufp = usrbuf;
+
+	while (nleft > 0) {
+		if ((nread = read(fd, bufp, nleft)) < 0) {
+			return -1;
+		} else if (nread == 0)
+			break;
+		nleft -= nread;
+		bufp += nread;
+	}
+	return (n - nleft);
+}
+
+
 char *GetNewLocation(char *html)
 {
 	char *link = strstr(html, "://"); /* no https */
@@ -309,6 +348,65 @@ char *GetNewLocation(char *html)
 	*link_end = '\0';
 
 	return link;
+}
+
+
+struct table *HashCreateTable(int size)
+{
+	struct table *t = (struct table *) malloc(sizeof(struct table));
+	t->size = size;
+	t->list = (struct node **) malloc(sizeof(struct node *) * size);
+	int i;
+	for (i = 0; i < size; i++)
+		t->list[i] = NULL;
+	return t;
+}
+
+
+int HashCode(struct table *t, const char *key)
+{
+	int n_key = (int) strlen(key);
+	n_key += key[n_key - 1];
+	n_key ^= key[0];
+
+	if (n_key < 0)
+		return -(n_key % t->size);
+	return n_key % t->size;
+}
+
+
+void HashInsert(struct table *t, char *key, int val)
+{
+	int pos = HashCode(t, key);
+	struct node *list = t->list[pos];
+	struct node *newNode = (struct node *) malloc(sizeof(struct node));
+	struct node *temp = list;
+	while (temp) {
+		if ((strncmp(temp->key, key, strlen(temp->key)) == 0)) {
+			temp->val = val;
+			return;
+		}
+		temp = temp->next;
+	}
+	newNode->key = key;
+	newNode->val = val;
+	newNode->next = list;
+	t->list[pos] = newNode;
+}
+
+
+int HashLookUp(struct table *t, char *key)
+{
+	int pos = HashCode(t, key);
+	struct node *list = t->list[pos];
+	struct node *temp = list;
+	while (temp) {
+		if ((strncmp(temp->key, key, strlen(temp->key)) == 0)) {
+			return temp->val;
+		}
+		temp = temp->next;
+	}
+	return -1;
 }
 
 
