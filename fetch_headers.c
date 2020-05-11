@@ -1,6 +1,3 @@
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "hicpp-signed-bitwise"
-
 /*	isTofu <mwalk762@mtroyal.ca>
  * 
  *	Usage:	gcc fetch_headers.c -o fetch_headers
@@ -75,7 +72,7 @@ int main(int argc, char *argv[])
     while ((opt = getopt(argc, argv, "h:p:t:")) != -1)
     {
         switch (opt)
-        { // NOLINT(hicpp-multiway-paths-covered)
+        {
         case 'h':
             connection.raw_host = optarg;
             break;
