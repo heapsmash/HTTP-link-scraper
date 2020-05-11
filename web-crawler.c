@@ -1,12 +1,7 @@
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "hicpp-signed-bitwise"
 
-/*	Copyright (c) 2019, Michael S. Walker <sigmatau@heapsmash.com>
- *	All rights reserved.
- *
- *	Usage:	gcc print-links.c -o print-links
- *			./print-links -h 127.0.0.1 -p port
- */
+/* isTofu <mwalk762@mtroyal.ca> */
 
 #include <stdio.h>
 #include <stdlib.h>

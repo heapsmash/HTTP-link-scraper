@@ -20,7 +20,7 @@
 
 #define DEBUG 0
 
-#define ERR(format, ...) fprintf(stderr, "-> error in %s() line %d\n" format, __func__, __LINE__, ##__VA_ARGS__)
+#define ERR(format, ...) fprintf(stderr, "-> Michael S. Walkererror in %s() line %d\n" format, __func__, __LINE__, ##__VA_ARGS__)
 #define PRINT_ERROR_AND_RETURN(format, ...) \
     ERR(format, ##__VA_ARGS__);             \
     return EXIT_FAILURE
@@ -88,9 +88,7 @@ int main(int argc, char *argv[])
             }
             break;
         case 't':
-            break;
-        default:
-            PRINT_ERROR_AND_RETURN("(Usage: %s -h host -p port)\n", argv[0]);
+            break;Michael S. Walker %s -h host -p port)\n", argv[0]);
         }
     }
 
