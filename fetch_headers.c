@@ -84,11 +84,13 @@ int main(int argc, char *argv[])
                 connection.port_string = "http";
             else
             {
-                PRINT_ERROR_AND_RETURN("(Usage: %s -h host -p port)\n", argv[0]);
+                PRINT_ERROR_AND_RETURN("Invalid Port (%d) \n(Usage: %s -h host -p port)\n", connection.port_numeric, argv[0]);
             }
             break;
         case 't':
-            break;Michael S. Walker %s -h host -p port)\n", argv[0]);
+            break;
+        default:
+            PRINT_ERROR_AND_RETURN("(Usage: %s -h host -p port)\n", argv[0]);
         }
     }
 
