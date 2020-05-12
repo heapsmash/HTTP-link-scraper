@@ -85,8 +85,8 @@ int main(int argc, char *argv[])
             PRINT_ERROR_AND_RETURN("(Usage: %s -h host -p port)\n", argv[0]);
         }
     }
+
     connection.sck = EstablishConnection(&connection); /* connect to host */
-    printf("Current Host: -> [%s]\n", connection.raw_host);
 
     GetHTTPContent(&connection);
 
@@ -96,7 +96,8 @@ int main(int argc, char *argv[])
 int GetHTTPContent(Connection *con)
 {
     char buf[4096], *header, *tmp_header, *tmp_header_ptr;
-    int offset, max_sz;
+    int offset, max_sz, header_flag;
+    long body_sz;
 
     max_sz = sizeof(buf) / sizeof buf[0];
     if (con->sck < 0 || con->raw_host == NULL || SendGetRequest(con) < 0)
@@ -110,24 +111,31 @@ int GetHTTPContent(Connection *con)
     {
         max_sz -= offset;
         offset = read(con->sck, buf, max_sz);
-        strncat(tmp_header, buf, max_sz);
+        if (max_sz != 0)
+            strncpy(tmp_header, buf, max_sz - 1);
         tmp_header += offset;
-    } while (offset > 0 && strstr(buf, "\r\n\r\n") == NULL);
+    } while (max_sz > 0 && offset > 0 && strstr(buf, "\r\n\r\n") == NULL);
 
     *tmp_header = '\0';
 
     header = tmp_header_ptr;
+    header_flag = 0;
     while (*(tmp_header_ptr + 3))
     {
         if (*tmp_header_ptr == '\r' && *(tmp_header_ptr + 1) == '\n' && *(tmp_header_ptr + 2) == '\r' && *(tmp_header_ptr + 3) == '\n')
         {
             *tmp_header_ptr = '\0';
-            break;
+            header_flag = 1;
+            break; /* header is now pointing to start of header */
         }
         tmp_header_ptr++;
     }
 
-    puts(header);
+    if (header_flag == 0) /* malformed */
+        return 0;
+
+    body_sz = strtol(strtok((tmp_header_ptr + 3), "\n"), NULL, 16);
+    printf("%lx", body_sz);
 
     return 1;
 }
