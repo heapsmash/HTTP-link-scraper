@@ -23,7 +23,7 @@
     return EXIT_FAILURE
 #define PRINT_ERROR_AND_EXIT(format, ...) \
     ERR(format, ##__VA_ARGS__);           \
-    exit EXIT_FAILURE
+    exit(EXIT_FAILURE)
 
 #define MAX_REQUEST_SIZE 50
 #define MAX_READ_SIZE 100000
@@ -49,10 +49,12 @@ typedef struct _Connection
     struct timeval time;
 } Connection;
 
-void InitData(Connection *con);
 int GetHTTPContent(Connection *con, size_t n);
 int SendGetRequest(Connection *con, const char *request, ...);
 int EstablishConnection(Connection *con);
+
+void InitData(Connection *con);
+
 int Write(void *request, int sck, size_t n);
 ssize_t Read(int fd, void *usrbuf, size_t n);
 
