@@ -95,16 +95,39 @@ int main(int argc, char *argv[])
 
 int GetHTTPContent(Connection *con)
 {
-    char received_data[4096];
+    char buf[4096], *header, *tmp_header, *tmp_header_ptr;
+    int offset, max_sz;
 
+    max_sz = sizeof(buf) / sizeof buf[0];
     if (con->sck < 0 || con->raw_host == NULL || SendGetRequest(con) < 0)
         return 0;
 
-    do
-        read(con->sck, received_data, sizeof(received_data));
-    while (strstr(received_data, "\r\n\r\n"));
+    tmp_header = malloc(max_sz);
+    tmp_header_ptr = tmp_header;
 
-    puts(received_data);
+    offset = 0;
+    do
+    {
+        max_sz -= offset;
+        offset = read(con->sck, buf, max_sz);
+        strncat(tmp_header, buf, max_sz);
+        tmp_header += offset;
+    } while (offset > 0 && strstr(buf, "\r\n\r\n") == NULL);
+
+    *tmp_header = '\0';
+
+    header = tmp_header_ptr;
+    while (*(tmp_header_ptr + 3))
+    {
+        if (*tmp_header_ptr == '\r' && *(tmp_header_ptr + 1) == '\n' && *(tmp_header_ptr + 2) == '\r' && *(tmp_header_ptr + 3) == '\n')
+        {
+            *tmp_header_ptr = '\0';
+            break;
+        }
+        tmp_header_ptr++;
+    }
+
+    puts(header);
 
     return 1;
 }
@@ -190,22 +213,4 @@ int Write(void *request, int sck, size_t n)
         bufp += nwritten;
     }
     return n;
-}
-
-ssize_t Read(int fd, void *usrbuf, size_t n)
-{
-    size_t nleft = n;
-    ssize_t nread;
-    char *bufp = usrbuf;
-
-    while (nleft > 0)
-    {
-        if ((nread = read(fd, bufp, nleft)) < 0)
-            return -1;
-        else if (nread == 0)
-            break;
-        nleft -= nread;
-        bufp += nread;
-    }
-    return (n - nleft);
 }
