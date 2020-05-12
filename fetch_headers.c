@@ -19,11 +19,16 @@
 
 #define ERR(format, ...) fprintf(stderr, "-> error in %s() line %d\n" format, __func__, __LINE__, ##__VA_ARGS__)
 #define PRINT_ERROR_AND_RETURN(format, ...) \
-    ERR(format, ##__VA_ARGS__);             \
-    return EXIT_FAILURE
+    {                                       \
+        ERR(format, ##__VA_ARGS__);         \
+        return EXIT_FAILURE;                \
+    }
+
 #define PRINT_ERROR_AND_EXIT(format, ...) \
-    ERR(format, ##__VA_ARGS__);           \
-    exit(EXIT_FAILURE)
+    {                                     \
+        ERR(format, ##__VA_ARGS__);       \
+        exit(EXIT_FAILURE);               \
+    }
 
 #define MAX_REQUEST_SIZE 50
 #define MAX_READ_SIZE 100000
@@ -33,24 +38,16 @@
 #define REQ_GET_HEADER_CLOSE "HEAD / HTTP/1.0\r\n\r\n"
 #define REQ_GET_BODY_CLOSE "GET /\r\n\r\n"
 
-typedef struct _HttpContent
-{
-    char get_http_request[MAX_REQUEST_SIZE];
-    char received_data[MAX_READ_SIZE];
-} HttpContent;
-
 typedef struct _Connection
 {
     char *raw_host;
     char *port_string;
     int port_numeric;
     int sck;
-    HttpContent http_data;
-    struct timeval time;
 } Connection;
 
 int GetHTTPContent(Connection *con, size_t n);
-int SendGetRequest(Connection *con, const char *request, ...);
+int SendGetRequest(Connection *con);
 int EstablishConnection(Connection *con);
 
 void InitData(Connection *con);
@@ -62,9 +59,6 @@ int main(int argc, char *argv[])
 {
     int opt;
     Connection connection;
-
-    connection.time.tv_sec = 2;
-    connection.time.tv_usec = 0;
 
     if (argc != 5)
     {
@@ -109,44 +103,36 @@ void InitData(Connection *con)
 
 int GetHTTPContent(Connection *con, size_t n)
 {
-    size_t nleft = n;
-    ssize_t nread;
-
-    if (con->raw_host == NULL || SendGetRequest(con, REQ_GET_BODY_CLOSE, con->raw_host, con->port_numeric) < 0)
+    if (con->raw_host == NULL || SendGetRequest(con) < 0)
         return 0;
 
-    do
-    {
-        nread = Read(con->sck, &con->http_data.received_data[n - nleft], nleft);
-        nleft -= nread;
-    } while (nleft > 0 && strstr(&con->http_data.received_data[0], "\r\n\r\n") == NULL);
+    read(con->sck, &con->http_data.received_data, n);
 }
 
-int SendGetRequest(Connection *con, const char *request, ...)
+int SendGetRequest(Connection *con)
 {
-    va_list ap;
+    char get_http_request[MAX_REQUEST_SIZE];
     int status = -1; /* fail */
 
     con->sck = EstablishConnection(con); /* connect to host */
     if (con->sck < 0)
         goto fail_sck;
 
-    va_start(ap, request);
-    if ((vsnprintf(con->http_data.get_http_request, MAX_REQUEST_SIZE, request, ap)) < 0)
+    if ((snprintf(get_http_request, MAX_REQUEST_SIZE, con->raw_host, con->port_numeric)) < 0)
     { /* Build request string */
-        ERR("vsnprintf error:\n");
-        goto fail_va;
+        ERR("snprintf error:\n");
+        goto fail_sn;
     }
 
-    if (Write(con->http_data.get_http_request, con->sck, strlen(con->http_data.get_http_request)) < 0)
+    if (Write(get_http_request, con->sck, strlen(get_http_request)) < 0)
     { /* send request to host */
         ERR("Write error: (%s)\n", strerror(errno));
         close(con->sck);
-        goto fail_va;
+        goto fail_sn;
     }
     status = 0; /* success */
 
-fail_va:
+fail_sn:
     va_end(ap);
 fail_sck:
     return status;
@@ -216,7 +202,7 @@ ssize_t Read(int fd, void *usrbuf, size_t n)
 {
     size_t nleft = n;
     ssize_t nread;
-    char *bufp = usrbuf;
+    t char *bufp = usrbuf;
 
     while (nleft > 0)
     {
