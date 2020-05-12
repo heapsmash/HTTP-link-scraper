@@ -31,7 +31,7 @@
     }
 
 #define MAX_REQUEST_SIZE 50
-#define MAX_READ_SIZE 100000
+#define MAX_READ_SIZE 4096
 
 #define REQ_GET_HEADER_BODY_DONT_CLOSE "GET / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" /* arg1 = host, arg2 = port */
 #define REQ_GET_HEADER_DONT_CLOSE "HEAD / HTTP/1.1\r\nHost: %s:%d\r\n\r\n"     /* arg1 = host, arg2 = port */
@@ -44,13 +44,12 @@ typedef struct _Connection
     char *port_string;
     int port_numeric;
     int sck;
+    struct timeval time;
 } Connection;
 
-int GetHTTPContent(Connection *con, size_t n);
+int GetHTTPContent(Connection *con);
 int SendGetRequest(Connection *con);
 int EstablishConnection(Connection *con);
-
-void InitData(Connection *con);
 
 int Write(void *request, int sck, size_t n);
 ssize_t Read(int fd, void *usrbuf, size_t n);
@@ -59,6 +58,9 @@ int main(int argc, char *argv[])
 {
     int opt;
     Connection connection;
+
+    connection.time.tv_sec = 2; /* timeout set to 2 */
+    connection.time.tv_usec = 0;
 
     if (argc != 5)
     {
@@ -86,27 +88,22 @@ int main(int argc, char *argv[])
             PRINT_ERROR_AND_RETURN("(Usage: %s -h host -p port)\n", argv[0]);
         }
     }
-
+    connection.sck = EstablishConnection(&connection); /* connect to host */
     printf("Current Host: -> [%s]\n", connection.raw_host);
-    InitData(&connection);
-    GetHTTPContent(&connection, MAX_READ_SIZE);
-    puts(connection.http_data.received_data);
+
+    GetHTTPContent(&connection);
 
     return 0;
 }
 
-void InitData(Connection *con)
+int GetHTTPContent(Connection *con)
 {
-    memset(&con->http_data.get_http_request, '\0', MAX_REQUEST_SIZE - 1);
-    memset(&con->http_data.received_data, '\0', MAX_REQUEST_SIZE - 1);
-}
+    char received_data[MAX_READ_SIZE];
 
-int GetHTTPContent(Connection *con, size_t n)
-{
-    if (con->raw_host == NULL || SendGetRequest(con) < 0)
+    if (con->sck < 0 || con->raw_host == NULL || SendGetRequest(con) < 0)
         return 0;
 
-    read(con->sck, &con->http_data.received_data, n);
+    read(con->sck, received_data, MAX_READ_SIZE);
 }
 
 int SendGetRequest(Connection *con)
@@ -114,27 +111,21 @@ int SendGetRequest(Connection *con)
     char get_http_request[MAX_REQUEST_SIZE];
     int status = -1; /* fail */
 
-    con->sck = EstablishConnection(con); /* connect to host */
-    if (con->sck < 0)
-        goto fail_sck;
-
     if ((snprintf(get_http_request, MAX_REQUEST_SIZE, con->raw_host, con->port_numeric)) < 0)
     { /* Build request string */
         ERR("snprintf error:\n");
-        goto fail_sn;
+        goto end;
     }
 
     if (Write(get_http_request, con->sck, strlen(get_http_request)) < 0)
     { /* send request to host */
         ERR("Write error: (%s)\n", strerror(errno));
         close(con->sck);
-        goto fail_sn;
+        goto end;
     }
     status = 0; /* success */
 
-fail_sn:
-    va_end(ap);
-fail_sck:
+end:
     return status;
 }
 
@@ -202,7 +193,7 @@ ssize_t Read(int fd, void *usrbuf, size_t n)
 {
     size_t nleft = n;
     ssize_t nread;
-    t char *bufp = usrbuf;
+    char *bufp = usrbuf;
 
     while (nleft > 0)
     {
