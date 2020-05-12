@@ -30,9 +30,6 @@
         exit(EXIT_FAILURE);               \
     }
 
-#define MAX_REQUEST_SIZE 50
-#define MAX_READ_SIZE 4096
-
 #define REQ_GET_HEADER_BODY_DONT_CLOSE "GET / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" /* arg1 = host, arg2 = port */
 #define REQ_GET_HEADER_DONT_CLOSE "HEAD / HTTP/1.1\r\nHost: %s:%d\r\n\r\n"     /* arg1 = host, arg2 = port */
 #define REQ_GET_HEADER_CLOSE "HEAD / HTTP/1.0\r\n\r\n"
@@ -98,20 +95,26 @@ int main(int argc, char *argv[])
 
 int GetHTTPContent(Connection *con)
 {
-    char received_data[MAX_READ_SIZE];
+    char received_data[4096];
 
     if (con->sck < 0 || con->raw_host == NULL || SendGetRequest(con) < 0)
         return 0;
 
-    read(con->sck, received_data, MAX_READ_SIZE);
+    do
+        read(con->sck, received_data, sizeof(received_data));
+    while (strstr(received_data, "\r\n\r\n"));
+
+    puts(received_data);
+
+    return 1;
 }
 
 int SendGetRequest(Connection *con)
 {
-    char get_http_request[MAX_REQUEST_SIZE];
+    char get_http_request[50];
     int status = -1; /* fail */
 
-    if ((snprintf(get_http_request, MAX_REQUEST_SIZE, con->raw_host, con->port_numeric)) < 0)
+    if ((snprintf(get_http_request, sizeof get_http_request, "GET / HTTP/1.1\r\nHost: %s:%d\r\n\r\n", con->raw_host, con->port_numeric)) < 0)
     { /* Build request string */
         ERR("snprintf error:\n");
         goto end;
