@@ -141,7 +141,7 @@ int GetHTTPContent(Connection *con)
     size_t body_bytes_read = strlen(tmp);
 
     int n = body_sz - body_bytes_read; /* get the number of bytes left to read in the body */
-    char *body = malloc(body_sz * 2);
+    char *body = malloc(body_sz);
 
     strncpy(body, tmp, body_bytes_read);
 
