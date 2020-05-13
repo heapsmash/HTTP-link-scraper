@@ -100,50 +100,14 @@ int GetHTTPContent(Connection *con)
     if (con->sck < 0 || con->raw_host == NULL || SendGetRequest(con) < 0)
         return 0;
 
-    ssize_t i = read(con->sck, buf, sizeof buf / sizeof buf[0]);
-    if (i < 0) /* something went wrong */
-        return 0;
-    buf[i] = '\0';
+    int buf_sz = sizeof(buf) / sizeof buf[0];
 
-    char *tmp_head = strdup(buf);
-    char *head_ptr = tmp_head;
+    char *header = malloc(4096);
 
-    while (*(tmp_head + 3)) /* assume not malformed */
+    while (strstr(buf, "\r\n\r\n") == NULL)
     {
-        if (*(tmp_head) == '\r' && *(tmp_head + 1) == '\n' && *(tmp_head + 2) == '\r' && *(tmp_head + 3) == '\n')
-        {
-            *tmp_head = '\0';
-            break;
-        }
-        tmp_head++;
+        ssize_t n_read = read(con->sck, buf, );
     }
-
-    char *head = strdup(head_ptr);
-    char *con_len = strstr(head, "Content-Length: ");
-
-    long body_sz; /* get the total number of bytes in the body either from contant length or the hex value after the \r\n\r\n */
-    if (con_len)
-    {
-        con_len = strtok(con_len, "\n");
-        body_sz = strtol(strtok(con_len, "Content-Length: "), NULL, 10);
-    }
-    else
-    {
-        char *body_ptr = strstr(buf, "\r\n\r\n");
-        char *content_length = strtok(body_ptr + 4, "\n");
-        body_sz = strtol(content_length, NULL, 16);
-    }
-
-    char *tmp = buf;
-    while (*tmp++) /* move pointer to start of body */
-        ;
-
-    size_t body_bytes_read = strlen(tmp);
-
-    int n = body_sz - body_bytes_read; /* get the number of bytes left to read in the body */
-    char *body = malloc(body_sz);
-
-    strncpy(body, tmp, body_bytes_read);
 
     return 1;
 }
