@@ -95,9 +95,9 @@ int main(int argc, char *argv[])
 
 int GetHTTPContent(Connection *con)
 {
-    char buf[4096], *header, *tmp_header, *tmp_header_ptr;
+    char buf[4096], *header, *tmp_header, *tmp_header_ptr, *body, *body_ptr;
     int offset, max_sz, header_flag;
-    long body_sz;
+    long body_sz, buf_offset;
 
     max_sz = sizeof(buf) / sizeof buf[0];
     if (con->sck < 0 || con->raw_host == NULL || SendGetRequest(con) < 0)
@@ -109,24 +109,25 @@ int GetHTTPContent(Connection *con)
     offset = 0;
     do
     {
-        max_sz -= offset;
         offset = read(con->sck, buf, max_sz);
         if (max_sz != 0)
             strncpy(tmp_header, buf, max_sz - 1);
         tmp_header += offset;
+        max_sz -= offset;
     } while (max_sz > 0 && offset > 0 && strstr(buf, "\r\n\r\n") == NULL);
 
     *tmp_header = '\0';
 
     header = tmp_header_ptr;
-    header_flag = 0;
+    offset = header_flag = 0;
+
     while (*(tmp_header_ptr + 3))
     {
         if (*tmp_header_ptr == '\r' && *(tmp_header_ptr + 1) == '\n' && *(tmp_header_ptr + 2) == '\r' && *(tmp_header_ptr + 3) == '\n')
         {
             *tmp_header_ptr = '\0';
             header_flag = 1;
-            break; /* header is now pointing to start of header */
+            break; /* header is now the header */
         }
         tmp_header_ptr++;
     }
@@ -134,8 +135,28 @@ int GetHTTPContent(Connection *con)
     if (header_flag == 0) /* malformed */
         return 0;
 
-    body_sz = strtol(strtok((tmp_header_ptr + 3), "\n"), NULL, 16);
-    printf("%lx", body_sz);
+    body_sz = strtol(strtok((tmp_header_ptr + 3), "\n"), NULL, 16); /* the size of the body to fetch */
+
+    buf_offset = (strlen(header) + strlen(strtok((tmp_header_ptr + 3), "\n"))) + 5;
+
+    body = malloc(body_sz + 1);
+    strncpy(body, &buf[buf_offset], buf_offset - 1);
+    body[buf_offset] = '\0';
+
+    puts("");
+    puts("--------HEADER----------");
+    puts("");
+    puts(header);
+    puts("");
+    puts("--------START OF BODY----------");
+    puts("");
+    puts(body);
+
+    puts("");
+    puts("--------SIZE OF BODY----------");
+    puts("");
+
+    printf("0x%lx\n\n", body_sz);
 
     return 1;
 }
