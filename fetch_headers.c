@@ -86,77 +86,64 @@ int main(int argc, char *argv[])
         }
     }
 
-    connection.sck = EstablishConnection(&connection); /* connect to host */
-
+    connection.sck = EstablishConnection(&connection); /* establish socket */
     GetHTTPContent(&connection);
+    close(connection.sck);
 
     return 0;
 }
 
 int GetHTTPContent(Connection *con)
 {
-    char buf[4096], *header, *tmp_header, *tmp_header_ptr, *body, *body_ptr;
-    int offset, max_sz, header_flag;
-    long body_sz, buf_offset;
+    char buf[4096];
 
-    max_sz = sizeof(buf) / sizeof buf[0];
     if (con->sck < 0 || con->raw_host == NULL || SendGetRequest(con) < 0)
         return 0;
 
-    tmp_header = malloc(max_sz);
-    tmp_header_ptr = tmp_header;
+    ssize_t i = read(con->sck, buf, sizeof buf / sizeof buf[0]);
+    if (i < 0) /* something went wrong */
+        return 0;
+    buf[i] = '\0';
 
-    offset = 0;
-    do
+    char *tmp_head = strdup(buf);
+    char *head_ptr = tmp_head;
+
+    while (*(tmp_head + 3)) /* assume not malformed */
     {
-        offset = read(con->sck, buf, max_sz);
-        if (max_sz != 0)
-            strncpy(tmp_header, buf, max_sz - 1);
-        tmp_header += offset;
-        max_sz -= offset;
-    } while (max_sz > 0 && offset > 0 && strstr(buf, "\r\n\r\n") == NULL);
-
-    *tmp_header = '\0';
-
-    header = tmp_header_ptr;
-    offset = header_flag = 0;
-
-    while (*(tmp_header_ptr + 3))
-    {
-        if (*tmp_header_ptr == '\r' && *(tmp_header_ptr + 1) == '\n' && *(tmp_header_ptr + 2) == '\r' && *(tmp_header_ptr + 3) == '\n')
+        if (*(tmp_head) == '\r' && *(tmp_head + 1) == '\n' && *(tmp_head + 2) == '\r' && *(tmp_head + 3) == '\n')
         {
-            *tmp_header_ptr = '\0';
-            header_flag = 1;
-            break; /* header is now the header */
+            *tmp_head = '\0';
+            break;
         }
-        tmp_header_ptr++;
+        tmp_head++;
     }
 
-    if (header_flag == 0) /* malformed */
-        return 0;
+    char *head = strdup(head_ptr);
+    char *con_len = strstr(head, "Content-Length: ");
 
-    body_sz = strtol(strtok((tmp_header_ptr + 3), "\n"), NULL, 16); /* the size of the body to fetch */
+    long body_sz; /* get the total number of bytes in the body either from contant length or the hex value after the \r\n\r\n */
+    if (con_len)
+    {
+        con_len = strtok(con_len, "\n");
+        body_sz = strtol(strtok(con_len, "Content-Length: "), NULL, 10);
+    }
+    else
+    {
+        char *body_ptr = strstr(buf, "\r\n\r\n");
+        char *content_length = strtok(body_ptr + 4, "\n");
+        body_sz = strtol(content_length, NULL, 16);
+    }
 
-    buf_offset = (strlen(header) + strlen(strtok((tmp_header_ptr + 3), "\n"))) + 5;
+    char *tmp = buf;
+    while (*tmp++) /* move pointer to start of body */
+        ;
 
-    body = malloc(body_sz + 1);
-    strncpy(body, &buf[buf_offset], buf_offset - 1);
-    body[buf_offset] = '\0';
+    size_t body_bytes_read = strlen(tmp);
 
-    puts("");
-    puts("--------HEADER----------");
-    puts("");
-    puts(header);
-    puts("");
-    puts("--------START OF BODY----------");
-    puts("");
-    puts(body);
+    int n = body_sz - body_bytes_read; /* get the number of bytes left to read in the body */
+    char *body = malloc(body_sz * 2);
 
-    puts("");
-    puts("--------SIZE OF BODY----------");
-    puts("");
-
-    printf("0x%lx\n\n", body_sz);
+    strncpy(body, tmp, body_bytes_read);
 
     return 1;
 }
