@@ -95,19 +95,49 @@ int main(int argc, char *argv[])
 
 int GetHTTPContent(Connection *con)
 {
-    char buf[4096];
+    char header[8192], *header_tail_ptr;
 
     if (con->sck < 0 || con->raw_host == NULL || SendGetRequest(con) < 0)
         return 0;
 
-    int buf_sz = sizeof(buf) / sizeof buf[0];
-
-    char *header = malloc(4096);
-
-    while (strstr(buf, "\r\n\r\n") == NULL)
+    int offset = 0;
+    while (1)
     {
-        ssize_t n_read = read(con->sck, buf, );
+        ssize_t nread = read(con->sck, header + offset, sizeof(header) - 1);
+        if (nread <= 0)
+            break;
+
+        offset += nread;
+        if ((header_tail_ptr = (strstr(header, "\r\n\r\n"))) != NULL)
+            break;
     }
+
+    *header_tail_ptr = '\0';
+    header[offset] = '\0';
+    header_tail_ptr += 4;
+
+    char con_len[offset];
+    strncpy(con_len, strchr(strstr(header, "Content-Length: "), ' ') + 1, offset - 1);
+    *(strchr(con_len, '\r')) = '\0';
+    long body_sz = strtol(con_len, NULL, 10);
+
+    char body[body_sz + 1];
+    strncpy(body, header_tail_ptr, sizeof body);
+
+    offset = strlen(header_tail_ptr);
+
+    while (1)
+    {
+        ssize_t nread = read(con->sck, body + offset, sizeof(body) - 1);
+        if (nread <= 0)
+            break;
+
+        offset += nread;
+    }
+    body[offset] = '\0';
+
+    puts(header);
+    puts(body);
 
     return 1;
 }
