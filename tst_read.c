@@ -12,7 +12,7 @@ ssize_t fake_read(int fd, void *buf, size_t nbytes)
         "HTTP/1.1 200 OK\r\n"
         "Date: Mon, 23 May 2005 22:38:34 GMT\r\n"
         "Content-Type: text/html; charset=UTF-8\r\n"
-        "Content-Length: 138\r\n"
+        "Content-Length: 157\r\n"
         "Last-Modified: Wed, 08 Jan 2003 23:11:55 GMT\r\n"
         "Server: Apache/1.3.3.7 (Unix) (Red-Hat/Linux)\r\n"
         "ETag: \"3f80f-1b6-3e1cb03b\"\r\n"
@@ -49,51 +49,46 @@ ssize_t fake_read(int fd, void *buf, size_t nbytes)
 
 int main(int argc, char *argv[])
 {
-    char buf[8192];
+    char header[8192], *header_tail_ptr;
 
     int offset = 0;
-    while (1) /* read until header is recieved */
+    while (1)
     {
-        ssize_t nreceived = fake_read(123, buf + offset, sizeof(buf) - 1);
-        if (nreceived <= 0)
+        ssize_t nread = fake_read(123, header + offset, sizeof(header) - 1);
+        if (nread <= 0)
             break;
 
-        offset += nreceived;
-
-        if (strstr(buf, "\r\n\r\n") != NULL)
+        offset += nread;
+        if ((header_tail_ptr = strstr(header, "\r\n\r\n")) != NULL)
             break;
     }
-    buf[offset] = '\0';
 
-    char *tmp_body = strstr(buf, "\r\n\r\n") + 4; /* store over read body */
-    *(strstr(buf, "\r\n\r\n")) = '\0';            /* truncate header */
+    *header_tail_ptr = '\0';
+    header_tail_ptr += 4;
+    header[offset] = '\0';
 
-    char header[sizeof(buf) + 1]; /* store header */
-    strncpy(header, buf, sizeof(buf));
+    char con_len[offset];
+    strncpy(con_len, strchr(strstr(header, "Content-Length: "), ' ') + 1, offset - 1);
+    *(strchr(con_len, '\r')) = '\0';
+    long body_sz = strtol(con_len, NULL, 10);
 
-    char *tmp = strstr(buf, "Content-Length: "); /* get content length */
-    *(strchr(tmp, '\r')) = '\0';
-    long content_len = strtol((strchr(tmp, ' ') + 1), NULL, 10);
+    char body[body_sz + 1];
+    strncpy(body, header_tail_ptr, sizeof body);
 
-    char body[content_len];
-    strncpy(body, tmp_body, sizeof body);
+    offset = strlen(header_tail_ptr);
 
-    offset = strlen(tmp_body);
-    while (1) /* read until body is recieved */
+    while (1)
     {
-        ssize_t nreceived = fake_read(123, body + offset, sizeof(body) - 1);
-        if (nreceived <= 0)
+        ssize_t nread = fake_read(123, body + offset, sizeof(body) - 1);
+        if (nread <= 0)
             break;
 
-        offset += nreceived;
+        offset += nread;
     }
+    body[offset] = '\0';
 
-    printf("%d\n", offset);
-
-    puts("--- HEADER ---");
-    printf("%s\n", header);
-    puts("--- BODY ---");
-    printf("%s", body);
+    puts(header);
+    puts(body);
 
     return 0;
 }
