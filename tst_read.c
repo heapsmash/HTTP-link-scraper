@@ -5,6 +5,24 @@
 
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 
+int GetHTTPContent(int sck, int (*call_back)(const void *, size_t, void *), void *cbk_context);
+ssize_t fake_read(int fd, void *buf, size_t nbytes);
+int http_body_read_cbk(const void *data, size_t len, void *context);
+
+int main(int argc, char *argv[])
+{
+    FILE *f = fopen("file.html", "w");
+
+    if (f == NULL) // Handle
+        return 1;
+
+    if (GetHTTPContent(123, &http_body_read_cbk, (void *)f) == 0)
+        ; // Handle
+    fclose(f);
+
+    return 0;
+}
+
 ssize_t fake_read(int fd, void *buf, size_t nbytes)
 {
     static size_t curpos = 0;
@@ -47,48 +65,74 @@ ssize_t fake_read(int fd, void *buf, size_t nbytes)
     return readlen;
 }
 
-int main(int argc, char *argv[])
+int GetHTTPContent(int sck, int (*call_back)(const void *, size_t, void *), void *cbk_context)
 {
-    char header[8192], *header_tail_ptr;
-
+    char header[8192], body[8192], *body_start;
     int offset = 0;
+    size_t body_head_len;
+
+    ssize_t nread;
     while (1)
     {
-        ssize_t nread = fake_read(123, header + offset, sizeof(header) - 1);
+        nread = fake_read(sck, header + offset, sizeof(header) - 1);
         if (nread <= 0)
             break;
 
         offset += nread;
-        if ((header_tail_ptr = strstr(header, "\r\n\r\n")) != NULL)
+        body_start = strstr(header, "\r\n\r\n");
+
+        if (body_start != NULL)
+        {
+            *body_start = '\0';
+
+            // Skip past the header delimiter
+            body_start += 4;
             break;
+        }
     }
 
-    *header_tail_ptr = '\0';
-    header_tail_ptr += 4;
-    header[offset] = '\0';
+    if (nread < 0)
+        return 0;
 
-    char con_len[offset];
-    strncpy(con_len, strchr(strstr(header, "Content-Length: "), ' ') + 1, offset - 1);
-    *(strchr(con_len, '\r')) = '\0';
-    long body_sz = strtol(con_len, NULL, 10);
+    body_head_len = offset - (body_start - header);
 
-    char body[body_sz + 1];
-    strncpy(body, header_tail_ptr, sizeof body);
+    printf("%ld\n", body_head_len);
 
-    offset = strlen(header_tail_ptr);
+    char *head_ptr = strstr(header, "Content-Length: ");
+    if (head_ptr == NULL)
+    {
+        fprintf(stderr, "Content-Length not found in header\n");
+        return 0;
+    }
 
+    // 15 is the number of bytes in "Content-Length"
+    long content_len = strtol(head_ptr + 15, NULL, 10);
+    call_back(body_start, body_head_len, cbk_context);
+
+    content_len -= body_head_len;
     while (1)
     {
-        ssize_t nread = fake_read(123, body + offset, sizeof(body) - 1);
-        if (nread <= 0)
+        nread = fake_read(sck, body, sizeof(body) - 1);
+
+        if (nread < 0)
             break;
 
-        offset += nread;
+        if (call_back(body, nread, cbk_context) == 0)
+            break;
+
+        content_len -= nread;
+
+        if (content_len == 0)
+            break;
     }
-    body[offset] = '\0';
 
-    puts(header);
-    puts(body);
+    if (nread < 0)
+        return 0;
 
-    return 0;
+    return 1;
+}
+
+int http_body_read_cbk(const void *data, size_t len, void *context)
+{
+    return fwrite(data, 1, len, (FILE *)context) == len;
 }

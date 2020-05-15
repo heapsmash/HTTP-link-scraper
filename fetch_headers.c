@@ -1,9 +1,3 @@
-/*	isTofu <mwalk762@mtroyal.ca>
- * 
- *	Usage:	gcc fetch_headers.c -o fetch_headers
- *			./fetch_headers -h www.website.com -p port
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -15,212 +9,351 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 
-#define DEBUG 0
-
-#define ERR(format, ...) fprintf(stderr, "-> error in %s() line %d\n" format, __func__, __LINE__, ##__VA_ARGS__)
-#define PRINT_ERROR_AND_RETURN(format, ...) \
-    {                                       \
-        ERR(format, ##__VA_ARGS__);         \
-        return EXIT_FAILURE;                \
-    }
-
-#define PRINT_ERROR_AND_EXIT(format, ...) \
-    {                                     \
-        ERR(format, ##__VA_ARGS__);       \
-        exit(EXIT_FAILURE);               \
-    }
-
-#define REQ_GET_HEADER_BODY_DONT_CLOSE "GET / HTTP/1.1\r\nHost: %s:%d\r\n\r\n" /* arg1 = host, arg2 = port */
-#define REQ_GET_HEADER_DONT_CLOSE "HEAD / HTTP/1.1\r\nHost: %s:%d\r\n\r\n"     /* arg1 = host, arg2 = port */
-#define REQ_GET_HEADER_CLOSE "HEAD / HTTP/1.0\r\n\r\n"
-#define REQ_GET_BODY_CLOSE "GET /\r\n\r\n"
-
-typedef struct _Connection
+typedef struct
 {
-    char *raw_host;
-    char *port_string;
-    int port_numeric;
-    int sck;
-    struct timeval time;
-} Connection;
+    int is_done;
+    int fd;
+    size_t pos;
+    size_t buflen;
+    char buf[BUFSIZ];
+} LINESCK;
 
-int GetHTTPContent(Connection *con);
-int SendGetRequest(Connection *con);
-int EstablishConnection(Connection *con);
-
-int Write(void *request, int sck, size_t n);
-ssize_t Read(int fd, void *usrbuf, size_t n);
+int EstablishConnection(const char *host, const char *service_str);
+int WebRequest(const char *verb, const char *host, const char *resource,
+               int (*write_cbk)(const void *, size_t, void *), void *cbk_context);
+int HttpParseHeader(char *header, char **keys, char **vals, size_t max_headers);
+int HttpWriteCbk(const void *data, size_t size, void *context);
 
 int main(int argc, char *argv[])
 {
-    int opt;
-    Connection connection;
+    const char *fname;
+    const char *res;
 
-    connection.time.tv_sec = 2; /* timeout set to 2 */
-    connection.time.tv_usec = 0;
-
-    if (argc != 5)
+    if (argc < 2)
     {
-        PRINT_ERROR_AND_RETURN("Usage: %s -h host -p port\n", argv[0]);
+        printf("Please specify website\n");
+        return 1;
     }
 
-    while ((opt = getopt(argc, argv, "h:p:t:")) != -1)
+    if (argv[2] == NULL)
     {
-        switch (opt)
-        {
-        case 'h':
-            connection.raw_host = optarg;
-            break;
-        case 'p':
-            if ((connection.port_numeric = (int)strtol(optarg, NULL, 10)) == 80)
-                connection.port_string = "http";
-            else
-            {
-                PRINT_ERROR_AND_RETURN("Invalid Port (%d) \n(Usage: %s -h host -p port)\n", connection.port_numeric, argv[0]);
-            }
-            break;
-        case 't':
-            break;
-        default:
-            PRINT_ERROR_AND_RETURN("(Usage: %s -h host -p port)\n", argv[0]);
-        }
+        fname = "index.html";
+        res = "";
+    }
+    else
+    {
+        fname = argv[2];
+        res = argv[2];
     }
 
-    connection.sck = EstablishConnection(&connection); /* establish socket */
-    GetHTTPContent(&connection);
-    close(connection.sck);
+    FILE *f = fopen(fname, "wb");
+    if (f == NULL)
+    {
+        printf("Failed to open %s for write\n", fname);
+        return 1;
+    }
 
+    printf("Saving to %s...\n", fname);
+
+    if (!WebRequest("GET", argv[1], res, HttpWriteCbk, f))
+        printf("Failed to get %s from %s\n", res, argv[1]);
+
+    printf("Wrote %ld bytes to %s.\n", ftell(f), fname);
+
+    fclose(f);
     return 0;
 }
 
-int GetHTTPContent(Connection *con)
+int HttpWriteCbk(const void *data, size_t size, void *context)
 {
-    char header[8192], *header_tail_ptr;
-
-    if (con->sck < 0 || con->raw_host == NULL || SendGetRequest(con) < 0)
-        return 0;
-
-    int offset = 0;
-    while (1)
-    {
-        ssize_t nread = read(con->sck, header + offset, sizeof(header) - 1);
-        if (nread <= 0)
-            break;
-
-        offset += nread;
-        if ((header_tail_ptr = (strstr(header, "\r\n\r\n"))) != NULL)
-            break;
-    }
-
-    *header_tail_ptr = '\0';
-    header[offset] = '\0';
-    header_tail_ptr += 4;
-
-    char con_len[offset];
-    strncpy(con_len, strchr(strstr(header, "Content-Length: "), ' ') + 1, offset - 1);
-    *(strchr(con_len, '\r')) = '\0';
-    long body_sz = strtol(con_len, NULL, 10);
-
-    char body[body_sz + 1];
-    strncpy(body, header_tail_ptr, sizeof body);
-
-    offset = strlen(header_tail_ptr);
-
-    while (1)
-    {
-        ssize_t nread = read(con->sck, body + offset, sizeof(body) - 1);
-        if (nread <= 0)
-            break;
-
-        offset += nread;
-    }
-    body[offset] = '\0';
-
-    puts(header);
-    puts(body);
-
+    fwrite(data, size, 1, context);
+    fflush(context);
     return 1;
 }
 
-int SendGetRequest(Connection *con)
+int WebRequest(const char *verb, const char *host, const char *resource,
+               int (*write_cbk)(const void *, size_t, void *), void *cbk_context)
 {
-    char get_http_request[50];
-    int status = -1; /* fail */
+    size_t total_len = 0;
+    size_t cur_pos = 0;
+    char *header_end = NULL;
+    int status = 0;
 
-    if ((snprintf(get_http_request, sizeof get_http_request, "GET / HTTP/1.1\r\nHost: %s:%d\r\n\r\n", con->raw_host, con->port_numeric)) < 0)
-    { /* Build request string */
-        ERR("snprintf error:\n");
-        goto end;
+    //// resolve shit and connect here
+    int sck = EstablishConnection(host, "http");
+    if (sck == -1)
+    {
+        printf("Failed to connect to host %s\n", host);
+        goto done;
     }
 
-    if (Write(get_http_request, con->sck, strlen(get_http_request)) < 0)
-    { /* send request to host */
-        ERR("Write error: (%s)\n", strerror(errno));
-        close(con->sck);
-        goto end;
-    }
-    status = 0; /* success */
+    char buf[8192];
 
-end:
+    //// Send an HTTP request
+    snprintf(buf, sizeof(buf),
+             "%s /%s HTTP/1.1\r\n"
+             "Host: %s\r\n\r\n",
+             verb, resource, host);
+
+    if (send(sck, buf, strlen(buf), 0) == -1)
+    { // handle other edge cases if desired
+        printf("Failed to send HTTP request\n");
+        goto done;
+    }
+
+    //// Read in the whole HTTP header
+    while (header_end == NULL && total_len < sizeof(buf))
+    {
+        ssize_t len_received = recv(sck, buf + total_len, sizeof(buf) - total_len, 0);
+        if (len_received == -1)
+        {
+            printf("Connection forcefully terminated\n");
+            goto done;
+        }
+        else if (len_received == 0)
+        {
+            printf("Received graceful disconnection after only reading %zd bytes of header !??\n", total_len);
+            goto done;
+        }
+        else
+        {
+            cur_pos = total_len;
+            total_len += len_received;
+        }
+
+        header_end = strnstr(buf + cur_pos, "\r\n\r\n", len_received);
+    }
+
+    if (header_end == NULL)
+    {
+        printf("HTTP header apparently larger than our buffer...\n");
+        goto done;
+    }
+
+    *header_end = '\0';
+
+    //// Yay, we found the header, let's parse it
+    char *keys[32];
+    char *vals[32];
+
+    int num_headers = HttpParseHeader(buf, keys, vals, 32);
+    if (num_headers == -1)
+    {
+        printf("HTTP header parsing failed\n");
+        goto done;
+    }
+
+    long response_body_len = 0;
+    int is_chunked_transfer = 0;
+
+    //// Find the header(s) we're interested in
+    for (int i = 0; i != num_headers; i++)
+    {
+        if (!strcmp(keys[i], "Content-Length"))
+        {
+            char *endptr = NULL;
+            response_body_len = strtol(vals[i], &endptr, 10);
+
+            if (*endptr != '\0')
+            {
+                // didn't parse cleanly
+                printf("Invalid content length \'%s\'\n", vals[i]);
+                goto done;
+            }
+
+            is_chunked_transfer = 0;
+            break;
+        }
+        else if (!strcmp(keys[i], "Transfer-Encoding"))
+        {
+            if (!strcmp(vals[i], "chunked")) // actually, this could be a comma delimited list... *sigh*
+                is_chunked_transfer = 1;
+        }
+    }
+
+    if (response_body_len == 0 && !is_chunked_transfer)
+    {
+        printf("Failed to find length of response body\n");
+        goto done;
+    }
+
+    //// Actually receive the body now!
+    const char *body_start = header_end + 4;
+    size_t body_start_len = total_len - (body_start - buf);
+    if (is_chunked_transfer)
+    {
+        printf("Expecting a chunked response body transfer.\n");
+        //HttpRecvBodyChunked(sck, body_start, body_start_len);
+    }
+    else
+    {
+        printf("Got length of response body: %ld\n", response_body_len);
+
+        if (!write_cbk(body_start, body_start_len, cbk_context))
+            goto done;
+
+        cur_pos = 0;
+        total_len = 0;
+
+        while (total_len < response_body_len)
+        {
+            ssize_t len_received = recv(sck, buf, sizeof(buf), 0);
+            if (len_received == -1)
+            {
+                printf("Connection forcefully terminated.\n");
+                goto done;
+            }
+            else if (len_received == 0)
+            {
+                printf("Conection closed.\n");
+                break;
+            }
+            else
+            {
+                cur_pos = total_len;
+                total_len += len_received;
+            }
+
+            printf("%zu/%zu bytes\n", total_len, response_body_len);
+            if (!write_cbk(buf, len_received, cbk_context))
+                goto done;
+        }
+    }
+
+    status = 1;
+
+done:
+    close(sck);
     return status;
 }
 
-int EstablishConnection(Connection *con)
+int HttpParseHeader(char *header, char **keys, char **vals, size_t max_headers)
 {
-    struct addrinfo hints, *listp, *p = NULL;
-    int status, clientfd = -1;
+    //// Get the status line
+    char *sep = strstr(header, "\r\n");
+    if (sep == NULL)
+        return 1; // no status line?
+    *sep = 0;
+    printf("Header line: %s\n", header);
+    header = sep + 2;
+
+    // Note we can't use strtok or strsep here because we need our delimeter to be multiple chars.
+    //for (s = strtok_r(buf, "\r\n", &last); ...etc...) <--- this isn't going to work correctly
+    size_t num_headers = 0;
+
+    //// Extract request params
+    char *cur = header;
+    while (num_headers < max_headers)
+    {
+        char *sep = strstr(cur, "\r\n");
+        if (sep == NULL)
+            break;
+
+        *sep = '\0';
+
+        keys[num_headers] = cur; // I believe the key could also possibly have whitespace before the colon...?  TODO check standard
+
+        char *delim = strchr(cur, ':');
+        if (delim == NULL)
+            return -1;
+
+        *delim++ = '\0';
+        delim += strspn(delim, " \v\t\r\n"); // skip whitespace
+        vals[num_headers] = delim;
+
+        printf("Got header: %s   ----->   %s\n", keys[num_headers], vals[num_headers]);
+
+        num_headers++;
+        cur = sep + 2;
+    }
+
+    return num_headers;
+}
+
+int EstablishConnection(const char *host, const char *service_str)
+{
+    struct addrinfo hints;
+    struct addrinfo *listp = NULL;
+    struct addrinfo *p = NULL;
+    int status;
+    int sck = -1;
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_CANONNAME | AI_ALL | AI_ADDRCONFIG;
 
-    status = getaddrinfo(con->raw_host, con->port_string, &hints, &listp);
+    status = getaddrinfo(host, service_str, &hints, &listp);
     if (status != 0)
     {
-        ERR("getaddrinfo error: (%s)\n", gai_strerror(status));
-        goto fail;
+        printf("getaddrinfo error: (%s)\n", gai_strerror(status));
+        goto done;
     }
 
     for (p = listp; p; p = p->ai_next)
     {
-        if ((clientfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0)
-            continue; /* Socket failed, try the next */
-        if (setsockopt(clientfd, SOL_SOCKET, SO_SNDTIMEO, (struct timeval *)&con->time, sizeof(struct timeval)) < 0)
-            goto fail_closefd_freeaddr;
-        if (connect(clientfd, p->ai_addr, p->ai_addrlen) != -1)
-            goto success; /* Success */
-        if (close(clientfd) < 0)
-            goto fail_freeaddr; /* Connect failed, try another */
+        sck = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (sck < 0)
+            continue;
+
+        struct timeval timeout;
+        timeout.tv_sec = 2;
+        timeout.tv_usec = 0;
+        if (setsockopt(sck, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0)
+        {
+            close(sck);
+            goto done;
+        }
+
+        if (connect(sck, p->ai_addr, p->ai_addrlen) != -1)
+            goto done;
+
+        close(sck);
     }
-    ERR("all connects failed");
+    printf("all connects failed\n");
 
 fail_closefd_freeaddr:
-    close(clientfd);
-success:
-fail_freeaddr:
-    freeaddrinfo(listp);
-fail:
-    return clientfd;
+    close(sck);
+done:
+    if (listp != NULL)
+        freeaddrinfo(listp);
+    return sck;
 }
 
-int Write(void *request, int sck, size_t n)
+int netgetc(LINESCK *stream)
 {
-    size_t nleft = n;
-    ssize_t nwritten;
+    if (stream->is_done)
+        return EOF;
 
-    char *bufp = request;
-    while (nleft > 0)
+    if (stream->pos == stream->buflen)
     {
-        if ((nwritten = write(sck, bufp, nleft)) <= 0)
-        {
-            if (errno == EINTR) /* Interrupted by sig handler */
-                nwritten = 0;
-            else
-                return -1;
-        }
-        nleft -= nwritten;
-        bufp += nwritten;
+        ssize_t nread = read(stream->fd, stream->buf, sizeof(stream->buf));
+        if (nread <= 0)
+            stream->is_done = 1;
+
+        stream->pos = 0;
+        stream->buflen = nread;
     }
-    return n;
+
+    return stream->buf[stream->pos++];
+}
+
+char *netgets(char *str, size_t size, LINESCK *stream)
+{
+    char *s = str;
+    int c = 0;
+
+    if (stream->is_done)
+        return NULL;
+
+    for (size_t i = 0; i != size - 1 && c != '\n'; i++)
+    {
+        c = netgetc(stream);
+        if (c == EOF)
+            break;
+        *s++ = c;
+    }
+
+    *s = '\0';
+    return str;
 }
