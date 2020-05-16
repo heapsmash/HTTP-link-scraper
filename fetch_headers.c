@@ -9,20 +9,86 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 
-typedef struct
-{
-    int is_done;
-    int fd;
-    size_t pos;
-    size_t buflen;
-    char buf[BUFSIZ];
-} LINESCK;
-
 int EstablishConnection(const char *host, const char *service_str);
 int WebRequest(const char *verb, const char *host, const char *resource,
                int (*write_cbk)(const void *, size_t, void *), void *cbk_context);
 int HttpParseHeader(char *header, char **keys, char **vals, size_t max_headers);
 int HttpWriteCbk(const void *data, size_t size, void *context);
+
+typedef struct
+{
+    char *key;
+    char *val;
+} KVPAIR;
+
+typedef struct
+{
+    int fd;
+    int is_done;
+    size_t pos;
+    size_t buflen;
+    char buf[BUFSIZ];
+} TEXTSCK;
+
+void textsckinit(TEXTSCK *stream, int fd)
+{
+    stream->fd = fd;
+    stream->is_done = 0;
+    stream->pos = 0;
+    stream->buflen = 0;
+}
+
+int netgetc(TEXTSCK *stream)
+{
+    if (stream->is_done)
+        return EOF;
+
+    if (stream->pos == stream->buflen)
+    {
+        ssize_t nread = read(stream->fd, stream->buf, sizeof(stream->buf));
+        if (nread <= 0)
+            stream->is_done = 1;
+
+        stream->pos = 0;
+        stream->buflen = nread;
+    }
+
+    return stream->buf[stream->pos++];
+}
+
+char *netgets(char *str, size_t size, TEXTSCK *stream)
+{
+    char *s = str;
+    int c = 0;
+
+    if (stream->is_done)
+        return NULL;
+
+    for (size_t i = 0; i != size - 1 && c != '\n'; i++)
+    {
+        c = netgetc(stream);
+        if (c == EOF)
+            break;
+
+        *s++ = c;
+    }
+
+    *s = '\0';
+    return str;
+}
+
+char *ChompWS(char *str)
+{
+    str += strspn(str, " \t\r\n");
+
+    char *end = str + strlen(str) - 1;
+    while (end > str && (*end == ' ' || *end == '\t' ||
+                         *end == '\r' || *end == '\n'))
+        end--;
+
+    end[1] = '\0';
+    return str;
+}
 
 int main(int argc, char *argv[])
 {
@@ -88,6 +154,7 @@ int WebRequest(const char *verb, const char *host, const char *resource,
     }
 
     char buf[8192];
+    char line[512];
 
     //// Send an HTTP request
     snprintf(buf, sizeof(buf),
@@ -101,47 +168,75 @@ int WebRequest(const char *verb, const char *host, const char *resource,
         goto done;
     }
 
-    //// Read in the whole HTTP header
-    while (header_end == NULL && total_len < sizeof(buf))
+    TEXTSCK stream;
+    KVPAIR headers[64];
+    textsckinit(&stream, sck);
+
+    netgets(line, sizeof(line), &stream);
+    printf("%s", line);
+
+    size_t num_headers = 0;
+
+    while (netgets(line, sizeof(line), &stream))
     {
-        ssize_t len_received = recv(sck, buf + total_len, sizeof(buf) - total_len, 0);
-        if (len_received == -1)
+        if (line[0] == '\r' && line[1] == '\n')
+            break;
+
+        char *val = strchr(line, ':');
+        if (val == NULL)
         {
-            printf("Connection forcefully terminated\n");
-            goto done;
-        }
-        else if (len_received == 0)
-        {
-            printf("Received graceful disconnection after only reading %zd bytes of header !??\n", total_len);
-            goto done;
-        }
-        else
-        {
-            cur_pos = total_len;
-            total_len += len_received;
+            printf("Malformed header, skipping...\n");
+            continue;
         }
 
-        header_end = strnstr(buf + cur_pos, "\r\n\r\n", len_received);
+        *val = '\0';
+        val = ChompWS(val + 1);
+
+        headers[num_headers].key = strdup(line);
+        headers[num_headers].val = strdup(val);
+        num_headers++;
     }
 
-    if (header_end == NULL)
+    for (int i = 0; i != num_headers; i++)
     {
-        printf("HTTP header apparently larger than our buffer...\n");
-        goto done;
+        printf("Key: %s\t\tval: %s\n", headers[i].key, headers[i].val);
     }
 
-    *header_end = '\0';
+    /*
+	//// Read in the whole HTTP header
+	while (header_end == NULL && total_len < sizeof(buf)) {
+		ssize_t len_received = recv(sck, buf + total_len, sizeof(buf) - total_len, 0);
+		if (len_received == -1) {
+			printf("Connection forcefully terminated\n");
+			goto done;
+		} else if (len_received == 0) {
+			printf("Received graceful disconnection after only reading %zd bytes of header !??\n", total_len);
+			goto done;
+		} else {
+			cur_pos = total_len;
+			total_len += len_received;
+		}
 
-    //// Yay, we found the header, let's parse it
-    char *keys[32];
-    char *vals[32];
+		header_end = strnstr(buf + cur_pos, "\r\n\r\n", len_received);
+	}
 
-    int num_headers = HttpParseHeader(buf, keys, vals, 32);
-    if (num_headers == -1)
-    {
-        printf("HTTP header parsing failed\n");
-        goto done;
-    }
+	if (header_end == NULL) {
+		printf("HTTP header apparently larger than our buffer...\n");
+		goto done;
+	}
+
+	*header_end = '\0';
+
+	//// Yay, we found the header, let's parse it
+	char *keys[32];
+	char *vals[32];
+
+	int num_headers = HttpParseHeader(buf, keys, vals, 32);
+	if (num_headers == -1) {
+		printf("HTTP header parsing failed\n");
+		goto done;
+	}
+	*/
 
     long response_body_len = 0;
     int is_chunked_transfer = 0;
@@ -149,24 +244,23 @@ int WebRequest(const char *verb, const char *host, const char *resource,
     //// Find the header(s) we're interested in
     for (int i = 0; i != num_headers; i++)
     {
-        if (!strcmp(keys[i], "Content-Length"))
+        if (!strcmp(headers[i].key, "Content-Length"))
         {
             char *endptr = NULL;
-            response_body_len = strtol(vals[i], &endptr, 10);
+            response_body_len = strtol(headers[i].val, &endptr, 10);
 
             if (*endptr != '\0')
             {
                 // didn't parse cleanly
-                printf("Invalid content length \'%s\'\n", vals[i]);
+                printf("Invalid content length \'%s\'\n", headers[i].val);
                 goto done;
             }
 
             is_chunked_transfer = 0;
-            break;
         }
-        else if (!strcmp(keys[i], "Transfer-Encoding"))
+        else if (!strcmp(headers[i].key, "Transfer-Encoding"))
         {
-            if (!strcmp(vals[i], "chunked")) // actually, this could be a comma delimited list... *sigh*
+            if (!strcmp(headers[i].val, "chunked")) // actually, this could be a comma delimited list... *sigh*
                 is_chunked_transfer = 1;
         }
     }
@@ -318,42 +412,4 @@ done:
     if (listp != NULL)
         freeaddrinfo(listp);
     return sck;
-}
-
-int netgetc(LINESCK *stream)
-{
-    if (stream->is_done)
-        return EOF;
-
-    if (stream->pos == stream->buflen)
-    {
-        ssize_t nread = read(stream->fd, stream->buf, sizeof(stream->buf));
-        if (nread <= 0)
-            stream->is_done = 1;
-
-        stream->pos = 0;
-        stream->buflen = nread;
-    }
-
-    return stream->buf[stream->pos++];
-}
-
-char *netgets(char *str, size_t size, LINESCK *stream)
-{
-    char *s = str;
-    int c = 0;
-
-    if (stream->is_done)
-        return NULL;
-
-    for (size_t i = 0; i != size - 1 && c != '\n'; i++)
-    {
-        c = netgetc(stream);
-        if (c == EOF)
-            break;
-        *s++ = c;
-    }
-
-    *s = '\0';
-    return str;
 }
